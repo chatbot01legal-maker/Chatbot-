@@ -1,152 +1,84 @@
+import os
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import openai
-import base64
-import io
-import json
-from datetime import datetime, timedelta
+import google.generativeai as genai
 
+# -----------------------------
+# CONFIG
+# -----------------------------
 app = Flask(__name__)
 CORS(app)
 
-# ==============================
-# CONFIG → GEMINI 2.5 PRO
-# ==============================
-openai.api_key = "TU_API_KEY_GEMINI"
+# Load your Google API key from environment variable
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=GOOGLE_API_KEY)
 
-# ==============================
-# MEMORIA POR USUARIO
-# ==============================
-conversaciones = {}  # {"usuario_id": [{"role":"user","content": "..."}]}
+# Load JSON prompt
+PROMPT_FILE = "prompt.json"
+if os.path.exists(PROMPT_FILE):
+    with open(PROMPT_FILE, "r", encoding="utf-8") as f:
+        SYSTEM_PROMPT = f.read()
+else:
+    SYSTEM_PROMPT = "You are a helpful legal assistant."
 
-# ==============================
-# GOOGLE CALENDAR
-# ==============================
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
+# -----------------------------
+# MODEL SETUP
+# -----------------------------
+model = genai.GenerativeModel(
+    model_name="gemini-2.5-pro",
+    system_instruction=SYSTEM_PROMPT
+)
 
-# Tu archivo credentials.json debe estar en el mismo repo
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
-calendar_credentials = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
-calendar_service = build("calendar", "v3", credentials=calendar_credentials)
+# -----------------------------
+# ROUTES
+# -----------------------------
 
-CALENDAR_ID = "primary"   # O el ID del calendario que quieras usar
-
-
-def agendar_llamada(nombre, email):
-    start_time = datetime.utcnow() + timedelta(hours=1)
-    end_time = start_time + timedelta(minutes=30)
-
-    evento = {
-        "summary": f"Reunión con {nombre}",
-        "description": f"Agendada por el chatbot legal",
-        "start": {"dateTime": start_time.isoformat() + "Z"},
-        "end": {"dateTime": end_time.isoformat() + "Z"},
-        "attendees": [{"email": email}],
-        "conferenceData": {
-            "createRequest": {"requestId": f"meet_{datetime.utcnow().timestamp()}"}
-        }
-    }
-
-    evento_creado = calendar_service.events().insert(
-        calendarId=CALENDAR_ID,
-        body=evento,
-        conferenceDataVersion=1
-    ).execute()
-
-    return evento_creado["hangoutLink"]
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "ok", "message": "Legal AI Chatbot running (no calendar)."})
 
 
-# ==============================
-# TRANSCRIBIR AUDIO → TEXTO
-# ==============================
-def transcribir_audio(audio_b64):
-    audio_bytes = base64.b64decode(audio_b64)
-
-    response = openai.audio.transcriptions.create(
-        model="gpt-4o-mini-transcribe",
-        file=("audio.webm", audio_bytes, "audio/webm")
-    )
-    return response.text
-
-
-# ==============================
-# TEXTO → VOZ DE GEMINI
-# ==============================
-def generar_audio(texto):
-    respuesta_audio = openai.audio.speech.create(
-        model="gpt-4o-mini-tts",
-        voice="verse",  # Cambiar si quieres otra
-        input=texto
-    )
-    return base64.b64encode(respuesta_audio.read()).decode("utf-8")
-
-
-# ==============================
-# CHAT PRINCIPAL
-# ==============================
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
-    usuario_id = data.get("usuario_id", "anon")
-    mensaje_texto = data.get("mensaje", "")
-    mensaje_audio = data.get("audio", None)  # Base64
+    """
+    Handles:
+    - text messages
+    - optional audio base64
+    """
+    try:
+        data = request.json
 
-    # Crear memoria del usuario
-    if usuario_id not in conversaciones:
-        conversaciones[usuario_id] = []
+        user_text = data.get("text", "")
+        audio_base64 = data.get("audio", None)
 
-    # Si viene audio → transcribir
-    if mensaje_audio:
-        mensaje_texto = transcribir_audio(mensaje_audio)
+        # Build input
+        parts = []
+        if user_text:
+            parts.append({"text": user_text})
 
-    # Guardar entrada usuario
-    conversaciones[usuario_id].append({"role":"user","content": mensaje_texto})
+        if audio_base64:
+            parts.append({
+                "inline_data": {
+                    "mime_type": "audio/webm",
+                    "data": audio_base64
+                }
+            })
 
-    # Enviar a Gemini
-    respuesta = openai.chat.completions.create(
-        model="gemini-2.5-pro",
-        messages=conversaciones[usuario_id]
-    )
+        # Run model
+        response = model.generate_content(parts)
 
-    texto_respuesta = respuesta.choices[0].message["content"]
+        return jsonify({
+            "response": response.text
+        })
 
-    # Guardar respuesta en memoria
-    conversaciones[usuario_id].append({"role":"assistant","content": texto_respuesta})
-
-    # Generar audio Gemini
-    audio_base64 = generar_audio(texto_respuesta)
-
-    return jsonify({
-        "respuesta_texto": texto_respuesta,
-        "respuesta_audio": audio_base64
-    })
-
-
-# ==============================
-# AGENDAR LLAMADA
-# ==============================
-@app.route("/agendar", methods=["POST"])
-def agendar():
-    data = request.json
-    nombre = data.get("nombre")
-    email = data.get("email")
-
-    link = agendar_llamada(nombre, email)
-
-    return jsonify({"meet_url": link})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# ==============================
-# RUTA INICIAL
-# ==============================
-@app.route("/")
-def inicio():
-    return "Backend Legal-IA funcionando correctamente."
-
-
-# ==============================
-# EJECUCIÓN
-# ==============================
+# -----------------------------
+# MAIN
+# -----------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3000)
+    port = int(os.environ.get("PORT", 3000))
+    app.run(host="0.0.0.0", port=port)
