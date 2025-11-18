@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify, render_template_string, session
 from flask_cors import CORS
 import os
 import google.generativeai as genai
-# LÍNEA CORREGIDA FINAL: Importa Content desde la ruta explícita y estable
-from google.generativeai.types.content_types import Content 
+# LÍNEA CORREGIDA FINAL: Volvemos a la ruta original, correcta para la versión 0.8.5 instalada
+from google.generativeai.types import Content 
 
 app = Flask(__name__)
 CORS(app)
@@ -79,7 +79,7 @@ CHAT_HTML = """
             typingIndicator.classList.add('message', 'assistant');
             typingIndicator.innerHTML = 'Lex está escribiendo...';
             chatWindow.appendChild(typingIndicator);
-            chatWindow.scrollTop = chatWindow.scrollHeight;
+            chatWindow.scrollTop = chatWindow.scroll;
 
             try {
                 const response = await fetch('/chat', {
@@ -180,5 +180,5 @@ def chat():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    # Asegúrate de usar debug=False en producción
     app.run(host="0.0.0.0", port=port, debug=True)
+    
