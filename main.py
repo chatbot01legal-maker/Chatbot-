@@ -1,84 +1,131 @@
-import os
-import json
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import google.generativeai as genai
+import os
 
-# -----------------------------
-# CONFIG
-# -----------------------------
 app = Flask(__name__)
 CORS(app)
 
-# Load your Google API key from environment variable
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-genai.configure(api_key=GOOGLE_API_KEY)
+# ============================
+# CONFIGURAR GEMINI
+# ============================
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-# Load JSON prompt
-PROMPT_FILE = "prompt.json"
-if os.path.exists(PROMPT_FILE):
-    with open(PROMPT_FILE, "r", encoding="utf-8") as f:
-        SYSTEM_PROMPT = f.read()
-else:
-    SYSTEM_PROMPT = "You are a helpful legal assistant."
+model = genai.GenerativeModel("gemini-2.0-flash-thinking-exp-01-21")
 
-# -----------------------------
-# MODEL SETUP
-# -----------------------------
-model = genai.GenerativeModel(
-    model_name="gemini-2.5-pro",
-    system_instruction=SYSTEM_PROMPT
-)
+# ============================
+# RUTA PRINCIPAL DEL CHAT (HTML)
+# ============================
+CHAT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Asesor Legal IA</title>
+    <style>
+        body {
+            font-family: Arial;
+            margin: 0;
+            padding: 0;
+            background: #f5f5f5;
+        }
+        #container {
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        #messages {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+        }
+        #input-area {
+            padding: 10px;
+            background: #ddd;
+            display: flex;
+        }
+        #input-area input {
+            flex: 1;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #aaa;
+        }
+        #input-area button {
+            margin-left: 10px;
+            padding: 10px 18px;
+            background: #1a237e;
+            border: none;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+    </style>
 
-# -----------------------------
-# ROUTES
-# -----------------------------
+    <script>
+        async function sendMessage() {
+            const input = document.getElementById("msg");
+            const text = input.value.trim();
+            if (!text) return;
 
-@app.route("/", methods=["GET"])
+            const messagesBox = document.getElementById("messages");
+            messagesBox.innerHTML += "<p><b>Tú:</b> " + text + "</p>";
+
+            input.value = "";
+
+            const response = await fetch("/api/message", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({message: text})
+            });
+
+            const data = await response.json();
+            messagesBox.innerHTML += "<p><b>Asesor IA:</b> " + data.reply + "</p>";
+
+            messagesBox.scrollTop = messagesBox.scrollHeight;
+        }
+    </script>
+</head>
+
+<body>
+    <div id="container">
+        <div id="messages"></div>
+
+        <div id="input-area">
+            <input id="msg" placeholder="Escribe tu mensaje…" onkeydown="if(event.key==='Enter') sendMessage()">
+            <button onclick="sendMessage()">Enviar</button>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+@app.route("/")
 def home():
-    return jsonify({"status": "ok", "message": "Legal AI Chatbot running (no calendar)."})
+    return jsonify({"status": "ok", "message": "Legal AI Chatbot running."})
 
-
-@app.route("/chat", methods=["POST"])
+@app.route("/chat")
 def chat():
-    """
-    Handles:
-    - text messages
-    - optional audio base64
-    """
+    return render_template_string(CHAT_HTML)
+
+# ============================
+# API DEL CHAT
+# ============================
+@app.route("/api/message", methods=["POST"])
+def api_message():
+    data = request.get_json()
+    user_msg = data.get("message", "")
+
     try:
-        data = request.json
-
-        user_text = data.get("text", "")
-        audio_base64 = data.get("audio", None)
-
-        # Build input
-        parts = []
-        if user_text:
-            parts.append({"text": user_text})
-
-        if audio_base64:
-            parts.append({
-                "inline_data": {
-                    "mime_type": "audio/webm",
-                    "data": audio_base64
-                }
-            })
-
-        # Run model
-        response = model.generate_content(parts)
-
-        return jsonify({
-            "response": response.text
-        })
-
+        response = model.generate_content(user_msg)
+        reply = response.text
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        reply = "Lo siento, hubo un error con el modelo."
 
+    return jsonify({"reply": reply})
 
-# -----------------------------
-# MAIN
-# -----------------------------
+# ============================
+# INICIO SERVIDOR
+# ============================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 3000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
