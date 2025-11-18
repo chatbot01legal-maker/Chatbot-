@@ -2,12 +2,13 @@ from flask import Flask, request, jsonify, render_template_string, session
 from flask_cors import CORS
 import os
 import google.generativeai as genai
-from google.generativeai.types import Content # Importar Content para manejar el historial
+# LÍNEA CORREGIDA: Importa Content directamente desde el paquete principal
+from google.generativeai import Content 
 
 app = Flask(__name__)
 CORS(app)
 
-# Necesario para sesiones
+# Necesario para sesiones. Usa una clave secreta fuerte en producción.
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -15,19 +16,110 @@ if not API_KEY:
     raise ValueError("Por favor define GEMINI_API_KEY en las variables de entorno.")
 
 genai.configure(api_key=API_KEY)
-# Usaremos un modelo diseñado para la conversación
+# Usando 'flash' para un rendimiento rápido y económico en chat
 model_name = "gemini-2.5-flash" 
-# El 2.5 Pro también funciona, pero Flash es más rápido y económico para chat
 model = genai.GenerativeModel(model_name)
 
-# Mensaje de bienvenida inicial (se usa para inicializar el chat)
+# Mensaje de bienvenida inicial (para inicializar el chat)
 INITIAL_MESSAGE = "Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?"
 
-# --- HTML omitido por brevedad, asumiendo que CHAT_HTML está bien definido ---
+CHAT_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AboLegal Chatbot</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; background-color: #f4f4f4; }
+        #chat-window { border: 1px solid #ccc; height: 400px; overflow-y: scroll; padding: 10px; background-color: #fff; border-radius: 8px; }
+        .message { margin-bottom: 10px; padding: 8px; border-radius: 5px; }
+        .user { text-align: right; background-color: #d1e7dd; margin-left: 20%; }
+        .assistant { text-align: left; background-color: #f8d7da; margin-right: 20%; }
+        #input-container { display: flex; margin-top: 10px; }
+        #user-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px 0 0 5px; }
+        #send-button { padding: 10px 15px; background-color: #007bff; color: white; border: none; cursor: pointer; border-radius: 0 5px 5px 0; }
+        #send-button:disabled { background-color: #a0a0a0; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <h1>Asesor Legal AboLegal (Lex) ⚖️</h1>
+    <div id="chat-window">
+        <div class="message assistant">Lex: Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?</div>
+    </div>
+    <div id="input-container">
+        <input type="text" id="user-input" placeholder="Escribe tu consulta legal..." autocomplete="off">
+        <button id="send-button">Enviar</button>
+    </div>
+
+    <script>
+        const chatWindow = document.getElementById('chat-window');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+
+        function appendMessage(sender, message) {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('message', sender);
+            msgDiv.innerHTML = `${sender.charAt(0).toUpperCase() + sender.slice(1)}: ${message.replace(/\\n/g, '<br>')}`;
+            chatWindow.appendChild(msgDiv);
+            chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll
+        }
+
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            // Mostrar mensaje del usuario y limpiar input
+            appendMessage('user', message);
+            userInput.value = '';
+            sendButton.disabled = true;
+            userInput.disabled = true;
+            
+            // Mostrar un indicador de 'escribiendo'
+            const typingIndicator = document.createElement('div');
+            typingIndicator.id = 'typing-indicator';
+            typingIndicator.classList.add('message', 'assistant');
+            typingIndicator.innerHTML = 'Lex está escribiendo...';
+            chatWindow.appendChild(typingIndicator);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+
+                const data = await response.json();
+
+                // Eliminar indicador de 'escribiendo'
+                chatWindow.removeChild(typingIndicator);
+
+                appendMessage('assistant', data.reply);
+            } catch (error) {
+                console.error('Error:', error);
+                // Eliminar indicador de 'escribiendo' y mostrar error
+                if(document.getElementById('typing-indicator')) {
+                    chatWindow.removeChild(typingIndicator);
+                }
+                appendMessage('assistant', 'Lo siento, no pude conectar con el servidor.');
+            } finally {
+                sendButton.disabled = false;
+                userInput.disabled = false;
+                userInput.focus();
+            }
+        }
+
+        sendButton.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+    </script>
+</body>
+</html>
+"""
 
 @app.route("/", methods=["GET"])
 def index():
-    # Limpiar o inicializar el chat de la sesión al cargar la página si lo deseas
+    # Inicializar el historial de chat de la sesión si no existe
     if "chat_session_history" not in session:
         session["chat_session_history"] = []
     return render_template_string(CHAT_HTML)
@@ -40,11 +132,10 @@ def chat():
     if not user_msg:
         return jsonify({"reply": "No se recibió ningún mensaje."})
     
-    # 1. Recuperar o inicializar el historial/chat
-    # El historial se guarda como una lista de diccionarios que representan objetos Content de Gemini
+    # 1. Recuperar historial y convertir a objetos Content
     history_dicts = session.get("chat_session_history", [])
     
-    # Convertir los diccionarios del historial a objetos Content para la sesión de chat
+    # Convertir los diccionarios del historial a objetos Content serializables por Gemini
     history_contents = [Content.from_dict(d) for d in history_dicts]
 
     # Iniciar la sesión de chat con el historial recuperado
@@ -52,15 +143,16 @@ def chat():
 
     # 2. Si el historial está vacío (primera vez), añade el mensaje inicial del Asistente (Lex)
     if not history_contents:
-        # Añade el mensaje inicial como contexto, sin esperar una respuesta (role='model')
-        # Esto es solo para que el modelo sepa la personalidad. No se muestra al usuario.
-        chat_session.history.append(Content(role='model', parts=[{'text': INITIAL_MESSAGE}]))
-        # Guarda este Content en la sesión de Flask (como dict)
-        session["chat_session_history"].append({'role': 'model', 'parts': [{'text': INITIAL_MESSAGE}]})
+        # Añade el mensaje inicial para establecer el contexto/rol del modelo.
+        # Role='model' se usa para el asistente/IA.
+        initial_content = Content(role='model', parts=[{'text': INITIAL_MESSAGE}])
+        chat_session.history.append(initial_content)
+        # Guarda el Content inicial en la sesión de Flask (como dict)
+        session["chat_session_history"].append(initial_content.to_dict())
 
     # 3. Enviar el nuevo mensaje y obtener la respuesta
     try:
-        # Usamos send_message, que añade automáticamente el mensaje de 'user' y la respuesta de 'model' al historial.
+        # send_message añade automáticamente el mensaje de 'user' y la respuesta de 'model' al historial.
         resp = chat_session.send_message(
             user_msg, 
             config=genai.types.GenerateContentConfig(
@@ -71,22 +163,16 @@ def chat():
         reply = resp.text if resp and hasattr(resp, "text") else "Lo siento, hubo un error con el modelo."
     except Exception as e:
         reply = f"Lo siento, hubo un error con el modelo: {str(e)}"
-        # Si hay un error, el historial no se actualiza.
         return jsonify({"reply": reply})
 
-    # 4. Guardar el historial actualizado de la sesión de chat
-    # El historial ahora incluye el último mensaje del usuario y la respuesta del modelo.
-    # Convertimos los objetos Content de Gemini a diccionarios que se pueden serializar en la sesión de Flask.
-    
-    # Recuperamos los dos últimos mensajes (user y model) y los agregamos al historial de la sesión de Flask
-    # La API de Gemini ya los añadió a chat_session.history
-    
-    # El historial ya incluye el mensaje del usuario y la respuesta del modelo.
+    # 4. Guardar el historial actualizado en la sesión de Flask
     # Guardamos los dos últimos elementos añadidos al historial (User y Model)
+    # Se añade el mensaje del usuario (el penúltimo)
     user_content = chat_session.history[-2].to_dict()
-    model_content = chat_session.history[-1].to_dict()
-    
     session["chat_session_history"].append(user_content)
+    
+    # Se añade la respuesta del modelo (el último)
+    model_content = chat_session.history[-1].to_dict()
     session["chat_session_history"].append(model_content)
     session.modified = True # Asegurar que Flask guarde la sesión
 
@@ -94,4 +180,5 @@ def chat():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # Asegúrate de usar debug=False en producción
+    app.run(host="0.0.0.0", port=port, debug=True)
