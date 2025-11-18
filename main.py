@@ -3,7 +3,7 @@ from flask_cors import CORS
 import os
 import google.generativeai as genai
 # Importación específica para google-generativeai==0.8.5. 
-# Debe funcionar una vez que cambies la versión de Python a 3.11.
+# Esta ruta debe funcionar correctamente si la versión de Python es compatible (3.11/3.12).
 from google.generativeai.types.content_types import Content 
 
 app = Flask(__name__)
