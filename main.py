@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify, render_template_string, session
 from flask_cors import CORS
 import os
 import google.generativeai as genai
-# CORRECCIÓN FINAL: Importa 'types' para compatibilidad con google-generativeai >= 0.10.0
-from google.generativeai import types 
+# CORRECCIÓN FINAL: Revertimos a la importación compatible con google-generativeai==0.8.5
+from google.generativeai.types import Content 
 
 app = Flask(__name__)
 CORS(app)
@@ -136,15 +136,15 @@ def chat():
     history_dicts = session.get("chat_session_history", [])
     
     # Convertir los diccionarios del historial a objetos Content serializables por Gemini
-    history_contents = [types.Content.from_dict(d) for d in history_dicts]
+    history_contents = [Content.from_dict(d) for d in history_dicts]
 
     # Iniciar la sesión de chat con el historial recuperado
     chat_session = model.start_chat(history=history_contents)
 
     # 2. Si el historial está vacío (primera vez), añade el mensaje inicial del Asistente (Lex)
     if not history_contents:
-        # Crea el objeto Content usando types.Content
-        initial_content = types.Content(role='model', parts=[{'text': INITIAL_MESSAGE}])
+        # Crea el objeto Content usando Content
+        initial_content = Content(role='model', parts=[{'text': INITIAL_MESSAGE}])
         chat_session.history.append(initial_content)
         # Guarda el Content inicial en la sesión de Flask (como dict)
         session["chat_session_history"].append(initial_content.to_dict())
@@ -154,6 +154,7 @@ def chat():
         # send_message añade automáticamente el mensaje de 'user' y la respuesta de 'model' al historial.
         resp = chat_session.send_message(
             user_msg, 
+            # genai.types.GenerateContentConfig funciona bien con la versión 0.8.5
             config=genai.types.GenerateContentConfig(
                 temperature=0.3,
                 max_output_tokens=400
