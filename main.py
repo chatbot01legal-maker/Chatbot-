@@ -4,8 +4,10 @@ import os
 import google.generativeai as genai
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Permitir solo tu dominio de abogados
+CORS(app, resources={r"/chat": {"origins": "https://www.abolegal.cl"}})
 
+# Clave secreta para sesiones
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -18,6 +20,7 @@ model = genai.GenerativeModel(model_name)
 
 INITIAL_MESSAGE = "Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?"
 
+# HTML del chat
 CHAT_HTML = """
 <!DOCTYPE html>
 <html>
@@ -77,7 +80,9 @@ CHAT_HTML = """
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
             try {
-                const response = await fetch(window.location.origin + '/chat', {
+                // URL completa de tu backend en Render
+                const backend_url = "https://miapp.onrender.com/chat";
+                const response = await fetch(backend_url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: message })
@@ -114,8 +119,12 @@ def index():
         session["chat_session_history"] = []
     return render_template_string(CHAT_HTML)
 
-@app.route("/chat", methods=["POST"])
+@app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
+    # Responder preflight OPTIONS
+    if request.method == "OPTIONS":
+        return '', 200
+
     data = request.get_json()
     user_msg = data.get("message", "")
     if not user_msg:
