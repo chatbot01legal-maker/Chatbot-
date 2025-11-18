@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify, render_template_string, session
 from flask_cors import CORS
 import os
 import google.generativeai as genai
-# LÍNEA CORREGIDA: Importa Content directamente desde el paquete principal
-from google.generativeai import Content 
+# LÍNEA CORREGIDA FINAL: Importa Content desde la ruta explícita y estable
+from google.generativeai.types.content_types import Content 
 
 app = Flask(__name__)
 CORS(app)
