@@ -1,25 +1,12 @@
-# Web framework
 Flask==2.3.2
 Flask-Cors==3.0.10
-
-# AI / Gemini
 google-generativeai==0.8.5
 openai==1.40.0
-
-# Google APIs (si en el futuro quieres integraciones)
 google-api-python-client==2.126.0
 google-auth==2.33.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
-
-# Multimedia / audio processing
 pydub==0.25.1
-
-# HTTP requests
 requests==2.32.3
-
-# Server / deployment
 gunicorn==22.0.0
-
-# Protocol buffers compatible con Gemini
 protobuf==4.25.3
