@@ -4,24 +4,20 @@ import os
 import google.generativeai as genai
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Necesario para sesiones. Usa una clave secreta fuerte en producción.
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise ValueError("Por favor define GEMINI_API_KEY en las variables de entorno de Render.")
 
-# Configuración y modelo
 genai.configure(api_key=API_KEY)
 model_name = "gemini-2.5-flash"
 model = genai.GenerativeModel(model_name)
 
-# Mensaje de bienvenida inicial (para inicializar el chat)
 INITIAL_MESSAGE = "Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?"
 
-# --- Código HTML para la Interfaz ---
 CHAT_HTML = """
 <!DOCTYPE html>
 <html>
@@ -81,7 +77,7 @@ CHAT_HTML = """
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
             try {
-                const response = await fetch('/chat', {
+                const response = await fetch(window.location.origin + '/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: message })
@@ -112,7 +108,6 @@ CHAT_HTML = """
 </html>
 """
 
-# --- Rutas de Flask ---
 @app.route("/", methods=["GET"])
 def index():
     if "chat_session_history" not in session:
@@ -130,7 +125,6 @@ def chat():
     history.append({"role": "user", "content": user_msg})
 
     try:
-        # Llamada al modelo Gemini
         resp = model.chat(
             messages=[{"role": "system", "content": INITIAL_MESSAGE}] + history,
             temperature=0.3,
