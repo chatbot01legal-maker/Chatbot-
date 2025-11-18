@@ -3,7 +3,7 @@ from flask_cors import CORS
 import os
 import google.generativeai as genai
 # Importación específica para google-generativeai==0.8.5. 
-# Si esta falla, indica un problema en el entorno de Render o Python 3.13.
+# Debe funcionar una vez que cambies la versión de Python a 3.11.
 from google.generativeai.types.content_types import Content 
 
 app = Flask(__name__)
@@ -14,15 +14,18 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise ValueError("Por favor define GEMINI_API_KEY en las variables de entorno.")
+    # Este mensaje se mostrará si la variable de entorno no está configurada.
+    raise ValueError("Por favor define GEMINI_API_KEY en las variables de entorno de Render.")
 
+# Configuración y modelo
 genai.configure(api_key=API_KEY)
-# Usando 'flash' para un rendimiento rápido y económico en chat
 model_name = "gemini-2.5-flash" 
 model = genai.GenerativeModel(model_name)
 
 # Mensaje de bienvenida inicial (para inicializar el chat)
 INITIAL_MESSAGE = "Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?"
+
+# --- Código HTML para la Interfaz ---
 
 CHAT_HTML = """
 <!DOCTYPE html>
@@ -44,8 +47,7 @@ CHAT_HTML = """
 <body>
     <h1>Asesor Legal AboLegal (Lex) ⚖️</h1>
     <div id="chat-window">
-        <div class="message assistant">Lex: Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?</div>
-    </div>
+        </div>
     <div id="input-container">
         <input type="text" id="user-input" placeholder="Escribe tu consulta legal..." autocomplete="off">
         <button id="send-button">Enviar</button>
@@ -56,6 +58,7 @@ CHAT_HTML = """
         const userInput = document.getElementById('user-input');
         const sendButton = document.getElementById('send-button');
 
+        // Función para mostrar mensajes
         function appendMessage(sender, message) {
             const msgDiv = document.createElement('div');
             msgDiv.classList.add('message', sender);
@@ -63,6 +66,11 @@ CHAT_HTML = """
             chatWindow.appendChild(msgDiv);
             chatWindow.scrollTop = chatWindow.scrollHeight; // Auto-scroll
         }
+        
+        // Añadir el mensaje inicial al cargar
+        document.addEventListener('DOMContentLoaded', () => {
+             appendMessage('assistant', 'Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?');
+        });
 
         async function sendMessage() {
             const message = userInput.value.trim();
@@ -118,6 +126,8 @@ CHAT_HTML = """
 </html>
 """
 
+# --- Rutas de Flask ---
+
 @app.route("/", methods=["GET"])
 def index():
     # Inicializar el historial de chat de la sesión si no existe
@@ -144,7 +154,7 @@ def chat():
 
     # 2. Si el historial está vacío (primera vez), añade el mensaje inicial del Asistente (Lex)
     if not history_contents:
-        # Crea el objeto Content usando Content
+        # Crea el objeto Content
         initial_content = Content(role='model', parts=[{'text': INITIAL_MESSAGE}])
         chat_session.history.append(initial_content)
         # Guarda el Content inicial en la sesión de Flask (como dict)
@@ -167,11 +177,9 @@ def chat():
 
     # 4. Guardar el historial actualizado en la sesión de Flask
     # Guardamos los dos últimos elementos añadidos al historial (User y Model)
-    # Se añade el mensaje del usuario (el penúltimo)
     user_content = chat_session.history[-2].to_dict()
     session["chat_session_history"].append(user_content)
     
-    # Se añade la respuesta del modelo (el último)
     model_content = chat_session.history[-1].to_dict()
     session["chat_session_history"].append(model_content)
     session.modified = True # Asegurar que Flask guarde la sesión
