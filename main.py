@@ -2,8 +2,9 @@ from flask import Flask, request, jsonify, render_template_string, session
 from flask_cors import CORS
 import os
 import google.generativeai as genai
-# CORRECCIÓN FINAL: Revertimos a la importación compatible con google-generativeai==0.8.5
-from google.generativeai.types import Content 
+# Importación específica para google-generativeai==0.8.5. 
+# Si esta falla, indica un problema en el entorno de Render o Python 3.13.
+from google.generativeai.types.content_types import Content 
 
 app = Flask(__name__)
 CORS(app)
@@ -154,7 +155,6 @@ def chat():
         # send_message añade automáticamente el mensaje de 'user' y la respuesta de 'model' al historial.
         resp = chat_session.send_message(
             user_msg, 
-            # genai.types.GenerateContentConfig funciona bien con la versión 0.8.5
             config=genai.types.GenerateContentConfig(
                 temperature=0.3,
                 max_output_tokens=400
