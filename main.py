@@ -1,27 +1,83 @@
+import os
+import json
 from flask import Flask, request, jsonify, render_template_string, session
 from flask_cors import CORS
-import os
-import google.generativeai as genai
+from google import genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.generativeai.errors import APIError
+import pickle # Para serializar el historial del chat
 
 app = Flask(__name__)
-# Habilitar CORS solo para tu dominio de abogados
-CORS(app, resources={r"/chat": {"origins": "https://www.abolegal.cl"}})
 
-# Clave secreta para sesiones
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
+# Configuración de CORS: Asegúrese de cambiar "http://localhost:5000" si prueba en otro puerto
+# o si despliega el widget en un dominio diferente a https://www.abolegal.cl
+CORS(app, resources={r"/chat": {"origins": ["https://www.abolegal.cl", "http://localhost:5000"]}})
 
-# API key de Gemini
+# Clave secreta para sesiones (CRÍTICA para mantener el historial)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "super_secret_key_change_me_in_prod")
+
+# --- Configuración de Gemini ---
 API_KEY = os.getenv("GEMINI_API_KEY")
+
 if not API_KEY:
-    raise ValueError("Por favor define GEMINI_API_KEY en las variables de entorno de Render.")
+    # Usar un error menos intrusivo si se espera una variable de entorno
+    print("ADVERTENCIA: GEMINI_API_KEY no está definida. La API fallará.")
+    
+try:
+    client = genai.Client(api_key=API_KEY)
+except Exception as e:
+    # Manejo de error si la clave es inválida al instanciar el cliente
+    print(f"Error al instanciar el cliente de Gemini: {e}")
+    client = None
 
-genai.configure(api_key=API_KEY)
 model_name = "gemini-2.5-flash"
-model = genai.GenerativeModel(model_name)
 
-INITIAL_MESSAGE = "Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?"
+# El mensaje inicial que define el rol (System Instruction)
+INITIAL_MESSAGE = "Eres Lex, un asistente legal experto de AboLegal. Tu único objetivo es recopilar información preliminar sobre el caso legal del usuario. Debes mantener un tono formal, profesional y de apoyo. No debes proporcionar consejos legales concretos, sino hacer preguntas para documentar el caso. NO puedes agendar la cita todavía."
 
-# --- HTML del chat ---
+# Configuración de seguridad (opcional, pero recomendable)
+safety_settings = [
+    {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
+]
+
+
+# --- Funciones de Utilidad de Chat ---
+def get_or_create_chat_session():
+    """Recupera el objeto chat de Gemini de la sesión de Flask o crea uno nuevo."""
+    global client
+    
+    if not client:
+         raise APIError("El cliente de Gemini no pudo ser inicializado.")
+
+    if "chat_pickle" in session:
+        try:
+            # Deserializar el objeto de chat si existe
+            chat = pickle.loads(session["chat_pickle"])
+            # Asegurar que el modelo configurado es el mismo
+            if chat.model_name != model_name:
+                 raise Exception("Modelo de chat desactualizado.")
+            return chat
+        except Exception as e:
+            print(f"Error al cargar la sesión de chat: {e}. Creando una nueva.")
+            session.pop("chat_pickle", None) # Limpiar la sesión corrupta
+            
+    # Crear una nueva sesión de chat
+    chat = client.models.generate_content_stream(
+         model=model_name,
+         contents=[{"role": "user", "parts": [{"text": INITIAL_MESSAGE}]}],
+         config={"system_instruction": INITIAL_MESSAGE, 
+                 "safety_settings": safety_settings,
+                 "temperature": 0.3,
+                 "max_output_tokens": 400},
+         # Inicializar la conversación con el mensaje del sistema
+         stream=False 
+    )
+    # Guardar el objeto de chat serializado en la sesión
+    session["chat_pickle"] = pickle.dumps(chat)
+    session.modified = True
+    return chat
+
+# --- HTML del chat (mismo que el suyo) ---
 CHAT_HTML = """
 <!DOCTYPE html>
 <html>
@@ -51,6 +107,7 @@ CHAT_HTML = """
         const chatWindow = document.getElementById('chat-window');
         const userInput = document.getElementById('user-input');
         const sendButton = document.getElementById('send-button');
+        const backend_url = "http://localhost:5000/chat"; // <--- CAMBIAR al desplegar en Render
 
         function appendMessage(sender, message) {
             const msgDiv = document.createElement('div');
@@ -60,9 +117,19 @@ CHAT_HTML = """
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
 
-        document.addEventListener('DOMContentLoaded', () => {
-            appendMessage('assistant', 'Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?');
-        });
+        // Recuperar el primer mensaje del asistente
+        async function getInitialMessage() {
+            try {
+                // Llamada a una ruta de inicialización si fuera necesaria. 
+                // Por ahora, usamos un mensaje estático y la lógica de Python lo ajustará.
+                appendMessage('assistant', 'Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?');
+            } catch (error) {
+                console.error('Error al obtener el mensaje inicial:', error);
+                appendMessage('assistant', 'Error de inicialización.');
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', getInitialMessage);
 
         async function sendMessage() {
             const message = userInput.value.trim();
@@ -81,8 +148,7 @@ CHAT_HTML = """
             chatWindow.scrollTop = chatWindow.scrollHeight;
 
             try {
-                // URL completa de tu backend en Render
-                const backend_url = "https://miapp.onrender.com/chat"; // <--- Cambia por tu URL real
+                // La URL debe coincidir con la de su backend
                 const response = await fetch(backend_url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -90,14 +156,25 @@ CHAT_HTML = """
                 });
 
                 const data = await response.json();
-                chatWindow.removeChild(typingIndicator);
-                appendMessage('assistant', data.reply);
+                
+                // Remover el indicador de tipeo SOLO si la solicitud fue exitosa
+                if(document.getElementById('typing-indicator')) {
+                    chatWindow.removeChild(typingIndicator);
+                }
+
+                if (response.ok) {
+                    appendMessage('assistant', data.reply);
+                } else {
+                    // Manejo de errores HTTP (ej: 400, 500)
+                    appendMessage('assistant', `Error del servidor: ${data.reply || response.statusText}`);
+                }
+
             } catch (error) {
                 console.error('Error:', error);
                 if(document.getElementById('typing-indicator')) {
                     chatWindow.removeChild(typingIndicator);
                 }
-                appendMessage('assistant', 'Lo siento, no pude conectar con el servidor.');
+                appendMessage('assistant', 'Lo siento, no pude conectar con el backend. Revisa la consola para más detalles.');
             } finally {
                 sendButton.disabled = false;
                 userInput.disabled = false;
@@ -117,40 +194,50 @@ CHAT_HTML = """
 # --- Rutas de Flask ---
 @app.route("/", methods=["GET"])
 def index():
-    if "chat_session_history" not in session:
-        session["chat_session_history"] = []
+    # Esta ruta es solo para pruebas internas y desarrollo.
     return render_template_string(CHAT_HTML)
+
 
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
-    # Responder preflight OPTIONS
+    # Manejo de preflight OPTIONS para CORS
     if request.method == "OPTIONS":
         return '', 200
 
     data = request.get_json()
     user_msg = data.get("message", "")
     if not user_msg:
-        return jsonify({"reply": "No se recibió ningún mensaje."})
-
-    history = session.get("chat_session_history", [])
-    history.append({"role": "user", "content": user_msg})
+        return jsonify({"reply": "No se recibió ningún mensaje."}), 400
 
     try:
-        resp = model.chat(
-            messages=[{"role": "system", "content": INITIAL_MESSAGE}] + history,
-            temperature=0.3,
-            max_output_tokens=400
+        # Recuperar o crear la sesión de chat (con historial)
+        chat_session = get_or_create_chat_session()
+        
+        # Enviar el nuevo mensaje
+        response = chat_session.send_message(
+            user_msg,
+            stream=False # Desactivamos el streaming por ahora, simplificando la lógica de la Fase 1
         )
-        reply = resp.last
+        
+        reply = response.text
+        
+        # Guardar el objeto de chat actualizado en la sesión
+        session["chat_pickle"] = pickle.dumps(chat_session)
+        session.modified = True
+        
+        return jsonify({"reply": reply})
+
+    except APIError as e:
+        print(f"Error de API de Gemini: {e}")
+        # En caso de error de API, limpiamos la sesión para forzar una nueva en el siguiente intento
+        session.pop("chat_pickle", None) 
+        return jsonify({"reply": f"Error interno del modelo (APIError): {str(e)}"}), 500
     except Exception as e:
-        reply = f"Lo siento, hubo un error con el modelo: {str(e)}"
-
-    history.append({"role": "assistant", "content": reply})
-    session["chat_session_history"] = history
-    session.modified = True
-
-    return jsonify({"reply": reply})
+        print(f"Error desconocido en la ruta /chat: {e}")
+        return jsonify({"reply": f"Error interno del servidor: {str(e)}"}), 500
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
+    # NOTA: debug=True solo en desarrollo. En Render se usa Gunicorn.
     app.run(host="0.0.0.0", port=port, debug=True)
+    
