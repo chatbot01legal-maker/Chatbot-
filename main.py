@@ -4,12 +4,13 @@ import os
 import google.generativeai as genai
 
 app = Flask(__name__)
-# Permitir solo tu dominio de abogados
+# Habilitar CORS solo para tu dominio de abogados
 CORS(app, resources={r"/chat": {"origins": "https://www.abolegal.cl"}})
 
 # Clave secreta para sesiones
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
 
+# API key de Gemini
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise ValueError("Por favor define GEMINI_API_KEY en las variables de entorno de Render.")
@@ -20,7 +21,7 @@ model = genai.GenerativeModel(model_name)
 
 INITIAL_MESSAGE = "Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?"
 
-# HTML del chat
+# --- HTML del chat ---
 CHAT_HTML = """
 <!DOCTYPE html>
 <html>
@@ -81,7 +82,7 @@ CHAT_HTML = """
 
             try {
                 // URL completa de tu backend en Render
-                const backend_url = "https://miapp.onrender.com/chat";
+                const backend_url = "https://miapp.onrender.com/chat"; // <--- Cambia por tu URL real
                 const response = await fetch(backend_url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -113,6 +114,7 @@ CHAT_HTML = """
 </html>
 """
 
+# --- Rutas de Flask ---
 @app.route("/", methods=["GET"])
 def index():
     if "chat_session_history" not in session:
