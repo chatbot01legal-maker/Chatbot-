@@ -2,22 +2,17 @@ import os
 import json
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-# Importamos genai para la configuración global, GenerativeModel y el APIError
+# Importamos genai para la configuración global, GenerativeModel y genai.errors.APIError
 import google.generativeai as genai 
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
-# CORRECCIÓN T08: Importamos APIError directamente desde el namespace principal
-from google.generativeai.errors import APIError # LÍNEA REMOVIDA
-# La línea de arriba es removida, APIError se usa sin importación explícita si genai se importa arriba
-# La forma correcta y más limpia es importarla directamente, pero si da error, se importa del namespace principal.
-# Mantenemos la estructura para minimizar cambios, pero cambiamos el origen de la importación.
-# Ya que está dando error, la movemos a la importación principal.
+# La importación de APIError desde 'google.generativeai.errors' HA SIDO ELIMINADA.
 
 app = Flask(__name__)
 
-# Configuración de CORS: CORRECCIÓN PENDIENTE (T06). Se mantiene la configuración inicial
+# Configuración de CORS: PENDIENTE T06. Se mantiene la configuración inicial
 CORS(app, resources={r"/chat": {"origins": ["https://www.abolegal.cl", "http://localhost:5000"]}})
 
-# Clave secreta para sesiones (CRÍTICA para mantener el historial)
+# Clave secreta (necesaria para Flask aunque no usemos sesiones aún)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "super_secret_key_change_me_in_prod")
 
 # --- Configuración de Gemini ---
@@ -26,18 +21,16 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     print("ADVERTENCIA: GEMINI_API_KEY no está definida. La API fallará.")
     
-# ******************************************************************
-# CORRECCIÓN DE TICKET #1: MIGRACIÓN A LA CONFIGURACIÓN MODERNA (genai.configure)
-
 if API_KEY:
-    genai.configure(api_key=API_KEY)
-    
+    try:
+        genai.configure(api_key=API_KEY)
+    except Exception as e:
+        print(f"Error al configurar Gemini: {e}")
+        
 model_name = "gemini-2.5-flash"
 
-# El mensaje inicial que define el rol (System Instruction)
 INITIAL_MESSAGE = "Eres Lex, un asistente legal experto de AboLegal. Tu único objetivo es recopilar información preliminar sobre el caso legal del usuario. Debes mantener un tono formal, profesional y de apoyo. No debes proporcionar consejos legales concretos, sino hacer preguntas para documentar el caso. NO puedes agendar la cita todavía."
 
-# Configuración de seguridad (opcional, pero recomendable)
 safety_settings = [
     {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
 ]
@@ -45,16 +38,12 @@ safety_settings = [
 
 # --- Funciones de Utilidad de Chat ---
 def get_or_create_chat_session():
-    """Crea un nuevo objeto chat de Gemini en cada solicitud.
-    ADVERTENCIA: Esta es una solución temporal T07 para evitar el PicklingError.
-    El historial de chat se perderá en cada solicitud POST.
-    """
+    """Crea un nuevo objeto chat de Gemini en cada solicitud (solución T07/T10)."""
     
-    # CORRECCIÓN T08 APLICADA AQUÍ: Se eliminó la línea de importación de APIError.
     if not API_KEY:
+         # Usamos la ruta completa al error de API para evitar errores de importación
          raise genai.errors.APIError("La clave API de Gemini no está configurada.")
 
-    # 1. Creamos el objeto GenerativeModel con la configuración de sistema
     ai_model = genai.GenerativeModel(
         model_name=model_name,
         system_instruction=INITIAL_MESSAGE,
@@ -64,10 +53,7 @@ def get_or_create_chat_session():
             "max_output_tokens": 400
         }
     )
-
-    # 2. Iniciamos y devolvemos la conversación SIN guardar en la sesión
     chat = ai_model.start_chat()
-    
     return chat
 
 # --- HTML del chat (Contenido del Iframe) ---
@@ -178,17 +164,14 @@ def index():
 
 @app.route("/ping", methods=["GET"])
 def ping():
-    # VERIFICACIÓN DE CONEXIÓN DE API
     if not os.getenv("GEMINI_API_KEY"):
         return jsonify({"status": "error", "message": "GEMINI_API_KEY no configurada."}), 500
     try:
-        # Intenta una llamada básica para verificar que la clave sea válida
         model = genai.GenerativeModel('gemini-2.5-flash')
         model.generate_content('test')
         return jsonify({"status": "ok", "service": "legal-ai-backend", "gemini_status": "ok"}), 200
     except Exception as e:
          return jsonify({"status": "ok", "service": "legal-ai-backend", "gemini_status": f"error ({str(e)})"}), 200
-
 
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
@@ -201,10 +184,8 @@ def chat():
         return jsonify({"reply": "No se recibió ningún mensaje."}), 400
 
     try:
-        # Se genera un nuevo objeto chat en cada solicitud (solución T07)
         chat_session = get_or_create_chat_session()
         
-        # Enviar el mensaje al objeto 'chat' de Gemini
         response = chat_session.send_message(
             user_msg,
             stream=False 
@@ -212,6 +193,7 @@ def chat():
         
         reply = response.text
         
+        # Usamos la ruta completa al error de API para evitar errores de importación
         return jsonify({"reply": reply})
 
     except genai.errors.APIError as e:
@@ -221,7 +203,10 @@ def chat():
         print(f"Error desconocido en la ruta /chat: {e}")
         return jsonify({"reply": f"Error interno del servidor: {str(e)}"}), 500
 
+
+# --- Configuración de Ejecución ---
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
+    # Para desarrollo local, si no se usa Gunicorn:
     app.run(host="0.0.0.0", port=port, debug=True)
-    
