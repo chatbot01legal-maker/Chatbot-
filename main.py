@@ -1,212 +1,131 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.status import HTTP_200_OK
+from schemas import ScheduleRequest, ScheduleResponse
+from datetime import datetime, timedelta
 import os
 import json
-from flask import Flask, request, jsonify, render_template_string
-from flask_cors import CORS
-# Importamos genai para la configuración global, GenerativeModel y genai.errors.APIError
-import google.generativeai as genai 
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
-# La importación de APIError desde 'google.generativeai.errors' HA SIDO ELIMINADA.
 
-app = Flask(__name__)
+# --- IMPORTACIONES PARA GOOGLE CALENDAR API ---
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-# Configuración de CORS: PENDIENTE T06. Se mantiene la configuración inicial
-CORS(app, resources={r"/chat": {"origins": ["https://www.abolegal.cl", "http://localhost:5000"]}})
+# --- INSTANCIA DE LA APLICACIÓN ---
+app = FastAPI(
+    title="LAW LAB - CASE_INTAKE API",
+    version="1.0.0",
+    description="API de agendamiento legal integrada con Google Calendar"
+)
 
-# Clave secreta (necesaria para Flask aunque no usemos sesiones aún)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "super_secret_key_change_me_in_prod")
+# --- CORS PARA FRONTEND ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En producción, reemplazar con dominio específico
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- Configuración de Gemini ---
-API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not API_KEY:
-    print("ADVERTENCIA: GEMINI_API_KEY no está definida. La API fallará.")
-    
-if API_KEY:
+# --- CONFIGURACIÓN GOOGLE CALENDAR ---
+def get_calendar_service():
+    """
+    Autentica con Google Calendar API usando credenciales de servicio.
+    Las credenciales deben estar en la variable de entorno GOOGLE_CREDENTIALS_JSON
+    """
     try:
-        genai.configure(api_key=API_KEY)
-    except Exception as e:
-        print(f"Error al configurar Gemini: {e}")
+        credentials_json = os.getenv('GOOGLE_CREDENTIALS_JSON')
+        if not credentials_json:
+            raise ValueError("GOOGLE_CREDENTIALS_JSON no está definida en variables de entorno")
         
-model_name = "gemini-2.5-flash"
-
-INITIAL_MESSAGE = "Eres Lex, un asistente legal experto de AboLegal. Tu único objetivo es recopilar información preliminar sobre el caso legal del usuario. Debes mantener un tono formal, profesional y de apoyo. No debes proporcionar consejos legales concretos, sino hacer preguntas para documentar el caso. NO puedes agendar la cita todavía."
-
-safety_settings = [
-    {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE},
-]
-
-
-# --- Funciones de Utilidad de Chat ---
-def get_or_create_chat_session():
-    """Crea un nuevo objeto chat de Gemini en cada solicitud (solución T07/T10)."""
-    
-    if not API_KEY:
-         # Usamos la ruta completa al error de API para evitar errores de importación
-         raise genai.errors.APIError("La clave API de Gemini no está configurada.")
-
-    ai_model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=INITIAL_MESSAGE,
-        config={
-            "safety_settings": safety_settings,
-            "temperature": 0.3,
-            "max_output_tokens": 400
-        }
-    )
-    chat = ai_model.start_chat()
-    return chat
-
-# --- HTML del chat (Contenido del Iframe) ---
-CHAT_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>AboLegal Chatbot</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 10px; background-color: #fff; display: flex; flex-direction: column; height: 100%; }
-        #chat-window { border: none; flex-grow: 1; overflow-y: scroll; padding: 0 5px; }
-        .message { margin-bottom: 10px; padding: 8px; border-radius: 5px; max-width: 80%; }
-        .user { text-align: right; background-color: #d1e7dd; margin-left: auto; }
-        .assistant { text-align: left; background-color: #f8d7da; margin-right: auto; }
-        #input-container { display: flex; margin-top: 10px; padding-top: 5px; border-top: 1px solid #eee; }
-        #user-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px 0 0 5px; }
-        #send-button { padding: 10px 15px; background-color: #1a237e; color: white; border: none; cursor: pointer; border-radius: 0 5px 5px 0; }
-        #send-button:disabled { background-color: #a0a0a0; cursor: not-allowed; }
-    </style>
-</head>
-<body>
-    <div id="chat-window"></div>
-    <div id="input-container">
-        <input type="text" id="user-input" placeholder="Escribe tu consulta legal..." autocomplete="off">
-        <button id="send-button">Enviar</button>
-    </div>
-
-    <script>
-        const chatWindow = document.getElementById('chat-window');
-        const userInput = document.getElementById('user-input');
-        const sendButton = document.getElementById('send-button');
-        const backend_url = "/chat"; 
-
-        function appendMessage(sender, message) {
-            const msgDiv = document.createElement('div');
-            msgDiv.classList.add('message', sender);
-            msgDiv.innerHTML = `${message.replace(/\\n/g, '<br>')}`;
-            chatWindow.appendChild(msgDiv);
-            chatWindow.scrollTop = chatWindow.scrollHeight;
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-             appendMessage('assistant', 'Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?');
-        });
-
-        async function sendMessage() {
-            const message = userInput.value.trim();
-            if (!message) return;
-
-            appendMessage('user', message);
-            userInput.value = '';
-            sendButton.disabled = true;
-            userInput.disabled = true;
-
-            const typingIndicator = document.createElement('div');
-            typingIndicator.id = 'typing-indicator';
-            typingIndicator.classList.add('message', 'assistant');
-            typingIndicator.innerHTML = 'Lex está escribiendo...';
-            chatWindow.appendChild(typingIndicator);
-            chatWindow.scrollTop = chatWindow.scrollHeight;
-
-            try {
-                const response = await fetch(backend_url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: message })
-                });
-
-                const data = await response.json();
-                
-                if(document.getElementById('typing-indicator')) {
-                    chatWindow.removeChild(typingIndicator);
-                }
-
-                if (response.ok) {
-                    appendMessage('assistant', data.reply);
-                } else {
-                    appendMessage('assistant', `Error del servidor: ${data.reply || response.statusText}`);
-                }
-
-            } catch (error) {
-                console.error('Error:', error);
-                if(document.getElementById('typing-indicator')) {
-                    chatWindow.removeChild(typingIndicator);
-                }
-                appendMessage('assistant', 'Lo siento, no pude conectar con el backend. Revisa la consola para más detalles.');
-            } finally {
-                sendButton.disabled = false;
-                userInput.disabled = false;
-                userInput.focus();
-            }
-        }
-
-        sendButton.addEventListener('click', sendMessage);
-        userInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
-    </script>
-</body>
-</html>
-"""
-
-# --- Rutas de Flask ---
-
-@app.route("/", methods=["GET"])
-def index():
-    return render_template_string(CHAT_HTML)
-
-@app.route("/ping", methods=["GET"])
-def ping():
-    if not os.getenv("GEMINI_API_KEY"):
-        return jsonify({"status": "error", "message": "GEMINI_API_KEY no configurada."}), 500
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        model.generate_content('test')
-        return jsonify({"status": "ok", "service": "legal-ai-backend", "gemini_status": "ok"}), 200
-    except Exception as e:
-         return jsonify({"status": "ok", "service": "legal-ai-backend", "gemini_status": f"error ({str(e)})"}), 200
-
-@app.route("/chat", methods=["POST", "OPTIONS"])
-def chat():
-    if request.method == "OPTIONS":
-        return '', 200
-
-    data = request.get_json()
-    user_msg = data.get("message", "")
-    if not user_msg:
-        return jsonify({"reply": "No se recibió ningún mensaje."}), 400
-
-    try:
-        chat_session = get_or_create_chat_session()
-        
-        response = chat_session.send_message(
-            user_msg,
-            stream=False 
+        credentials_info = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_info,
+            scopes=['https://www.googleapis.com/auth/calendar']
         )
         
-        reply = response.text
-        
-        # Usamos la ruta completa al error de API para evitar errores de importación
-        return jsonify({"reply": reply})
-
-    except genai.errors.APIError as e:
-        print(f"Error de API de Gemini: {e}")
-        return jsonify({"reply": f"Error interno del modelo (APIError): Revise su clave Gemini."}), 500
+        service = build('calendar', 'v3', credentials=credentials)
+        return service
     except Exception as e:
-        print(f"Error desconocido en la ruta /chat: {e}")
-        return jsonify({"reply": f"Error interno del servidor: {str(e)}"}), 500
+        raise RuntimeError(f"Error en autenticación Google Calendar: {e}")
 
+# --- LÓGICA REAL DE AGENDAMIENTO ---
+def agendar_cita_real(request: ScheduleRequest) -> str:
+    """
+    Implementación real que crea un evento en Google Calendar.
+    Retorna el event_id real de Google Calendar.
+    """
+    try:
+        service = get_calendar_service()
+        calendar_id = os.getenv('CALENDAR_ID')
+        
+        if not calendar_id:
+            raise ValueError("CALENDAR_ID no está definido en variables de entorno")
+        
+        event = {
+            'summary': f'Cita Legal - {request.client_name}',
+            'description': request.problem_description,
+            'start': {
+                'dateTime': request.suggested_datetime.isoformat(),
+                'timeZone': 'America/Santiago',
+            },
+            'end': {
+                'dateTime': (request.suggested_datetime + timedelta(hours=1)).isoformat(),
+                'timeZone': 'America/Santiago',
+            },
+            'attendees': [
+                {'email': request.client_email}
+            ],
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'email', 'minutes': 24 * 60},
+                    {'method': 'popup', 'minutes': 30},
+                ],
+            },
+        }
+        
+        created_event = service.events().insert(
+            calendarId=calendar_id,
+            body=event,
+            sendUpdates='all'
+        ).execute()
+        
+        event_id = created_event['id']
+        print(f"[{datetime.now().isoformat()}] Cita creada para {request.client_email} - ID: {event_id}")
+        
+        return event_id
+        
+    except HttpError as e:
+        raise RuntimeError(f"Error de Google Calendar API: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Error inesperado: {e}")
 
-# --- Configuración de Ejecución ---
+# --- ENDPOINTS ---
+@app.get("/", status_code=HTTP_200_OK)
+async def root():
+    return {
+        "status": "ok", 
+        "service": "LAW LAB API", 
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    # Para desarrollo local, si no se usa Gunicorn:
-    app.run(host="0.0.0.0", port=port, debug=True)
+@app.post("/schedule", response_model=ScheduleResponse, status_code=HTTP_200_OK)
+async def schedule_appointment(request: ScheduleRequest):
+    try:
+        appointment_id = agendar_cita_real(request)
+        
+        return ScheduleResponse(
+            status="success",
+            appointment_id=appointment_id,
+            message=f"Agendamiento completado para {request.client_email}.",
+            scheduled_time=request.suggested_datetime
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=f"Error de configuración: {e}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"Error con Google Calendar: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error interno del servidor")
