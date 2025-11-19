@@ -1,18 +1,18 @@
 import os
 import json
-from flask import Flask, request, jsonify, render_template_string, session
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-# ******************************************************************
-# CORRECCIÓN DE TICKET #1: Importación de Gemini (Version 0.8.5)
-# Reemplazamos 'from google import genai' por la importación directa de Client
-from google.generativeai import Client 
+# Ya no es necesario 'pickle' en esta solución temporal
+# import pickle 
+# Importamos genai para la configuración global y GenerativeModel
+import google.generativeai as genai 
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from google.generativeai.errors import APIError
-import pickle # Para serializar el historial del chat
 
 app = Flask(__name__)
 
-# Configuración de CORS:
+# Configuración de CORS: CORRECCIÓN PENDIENTE (T06). Se mantiene la configuración inicial
+# El origen permitido debe ser la URL de Hostinger donde está el widget
 CORS(app, resources={r"/chat": {"origins": ["https://www.abolegal.cl", "http://localhost:5000"]}})
 
 # Clave secreta para sesiones (CRÍTICA para mantener el historial)
@@ -24,14 +24,12 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     print("ADVERTENCIA: GEMINI_API_KEY no está definida. La API fallará.")
     
-try:
-    # ******************************************************************
-    # CORRECCIÓN DE TICKET #1: Usamos la clase Client directamente
-    client = Client(api_key=API_KEY)
-except Exception as e:
-    print(f"Error al instanciar el cliente de Gemini: {e}")
-    client = None
+# ******************************************************************
+# CORRECCIÓN DE TICKET #1: MIGRACIÓN A LA CONFIGURACIÓN MODERNA (genai.configure)
 
+if API_KEY:
+    genai.configure(api_key=API_KEY)
+    
 model_name = "gemini-2.5-flash"
 
 # El mensaje inicial que define el rol (System Instruction)
@@ -45,42 +43,31 @@ safety_settings = [
 
 # --- Funciones de Utilidad de Chat ---
 def get_or_create_chat_session():
-    """Recupera el objeto chat de Gemini de la sesión de Flask o crea uno nuevo."""
-    global client
+    """Crea un nuevo objeto chat de Gemini en cada solicitud.
+    ADVERTENCIA: Esta es una solución temporal T07 para evitar el PicklingError.
+    El historial de chat se perderá en cada solicitud POST.
+    """
     
-    if not client:
-         # Esto se disparará si la clave API no es válida al inicio
-         raise APIError("El cliente de Gemini no pudo ser inicializado. Revise GEMINI_API_KEY.")
+    if not API_KEY:
+         raise APIError("La clave API de Gemini no está configurada.")
 
-    if "chat_pickle" in session:
-        try:
-            # Deserializar el objeto de chat si existe
-            chat = pickle.loads(session["chat_pickle"])
-            # Asegurar que el modelo configurado es el mismo
-            if chat.model_name != model_name:
-                 raise Exception("Modelo de chat desactualizado.")
-            return chat
-        except Exception as e:
-            # Si el pickle está corrupto, lo limpiamos y creamos uno nuevo
-            print(f"Error al cargar la sesión de chat: {e}. Creando una nueva.")
-            session.pop("chat_pickle", None)
-            
-    # Crear una nueva sesión de chat
-    # NOTA: Usamos generate_content_stream con stream=False para inicializar la sesión
-    # con el System Instruction antes del primer mensaje del usuario.
-    chat = client.models.generate_content_stream(
-         model=model_name,
-         contents=[{"role": "user", "parts": [{"text": "Inicia la conversación."}]}],
-         config={"system_instruction": INITIAL_MESSAGE, 
-                 "safety_settings": safety_settings,
-                 "temperature": 0.3,
-                 "max_output_tokens": 400},
-         stream=False 
+    # 1. Creamos el objeto GenerativeModel con la configuración de sistema
+    ai_model = genai.GenerativeModel(
+        model_name=model_name,
+        system_instruction=INITIAL_MESSAGE,
+        config={
+            "safety_settings": safety_settings,
+            "temperature": 0.3,
+            "max_output_tokens": 400
+        }
     )
+
+    # 2. Iniciamos y devolvemos la conversación SIN guardar en la sesión
+    chat = ai_model.start_chat()
     
-    # Guardar el objeto de chat serializado en la sesión
-    session["chat_pickle"] = pickle.dumps(chat)
-    session.modified = True
+    # IMPORTANTE: Aquí se podría integrar la lógica de historial con PostgreSQL
+    # para regenerar el contexto, pero eso es Tarea T02 (Pendiente).
+    
     return chat
 
 # --- HTML del chat (Contenido del Iframe) ---
@@ -112,7 +99,7 @@ CHAT_HTML = """
         const chatWindow = document.getElementById('chat-window');
         const userInput = document.getElementById('user-input');
         const sendButton = document.getElementById('send-button');
-        const backend_url = "/chat"; // Se resuelve a la URL del backend
+        const backend_url = "/chat"; 
 
         function appendMessage(sender, message) {
             const msgDiv = document.createElement('div');
@@ -123,7 +110,6 @@ CHAT_HTML = """
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-             // Mensaje inicial estático que coincide con el rol del bot
              appendMessage('assistant', 'Hola, soy Lex, tu asesor legal de AboLegal. ¿En qué puedo ayudarte hoy?');
         });
 
@@ -188,17 +174,14 @@ CHAT_HTML = """
 
 @app.route("/", methods=["GET"])
 def index():
-    # Esta ruta servirá el contenido del IFRAME (el chat real)
     return render_template_string(CHAT_HTML)
 
 @app.route("/ping", methods=["GET"])
 def ping():
-    # Ruta de chequeo de salud (útil para Render)
     return jsonify({"status": "ok", "service": "legal-ai-backend"}), 200
 
 @app.route("/chat", methods=["POST", "OPTIONS"])
 def chat():
-    # Manejo de preflight OPTIONS para CORS
     if request.method == "OPTIONS":
         return '', 200
 
@@ -208,28 +191,24 @@ def chat():
         return jsonify({"reply": "No se recibió ningún mensaje."}), 400
 
     try:
-        # Recuperar o crear la sesión de chat (con historial)
-        # Esto iniciará una nueva conversación si la sesión ha expirado o no existe
+        # Se genera un nuevo objeto chat en cada solicitud (solución T07)
         chat_session = get_or_create_chat_session()
         
-        # Enviar el nuevo mensaje
+        # Enviar el mensaje al objeto 'chat' de Gemini
         response = chat_session.send_message(
             user_msg,
-            stream=False # Desactivamos el streaming por ahora
+            stream=False 
         )
         
         reply = response.text
         
-        # Guardar el objeto de chat actualizado en la sesión
-        session["chat_pickle"] = pickle.dumps(chat_session)
-        session.modified = True
+        # Eliminadas las líneas de pickle
         
         return jsonify({"reply": reply})
 
     except APIError as e:
         print(f"Error de API de Gemini: {e}")
-        # Limpiamos la sesión para forzar una nueva en el siguiente intento
-        session.pop("chat_pickle", None) 
+        # session.pop("chat_pickle", None) # No es necesario si no usamos session
         return jsonify({"reply": f"Error interno del modelo (APIError): Revise su clave Gemini."}), 500
     except Exception as e:
         print(f"Error desconocido en la ruta /chat: {e}")
@@ -237,5 +216,4 @@ def chat():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    # NOTA: debug=True solo en desarrollo. En Render se usa Gunicorn.
     app.run(host="0.0.0.0", port=port, debug=True)
